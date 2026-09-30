@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { createUserStore, registerUser, loginUser } from '@/engine/auth'
+import { createUserStore, registerUser, loginUser, DEFAULT_HASH_ITERATIONS } from '@/engine/auth'
 
 // -----------------------------------------------------------------------------
 // App state — a thin, honest wrapper around the crypto engine.
@@ -53,6 +53,9 @@ function serializeUser(record) {
     username: record.username,
     saltHex: record.saltHex,
     verifierHex: record.verifierHex,
+    // The work factor this account was derived at. Older records predate the field;
+    // they were all derived at the original default, so that is the correct backfill.
+    iterations: Number.isInteger(record.iterations) ? record.iterations : DEFAULT_HASH_ITERATIONS,
     createdAt: record.createdAt ?? Date.now(),
   }
 }
@@ -69,7 +72,7 @@ function hydrate() {
         typeof u.username === 'string' &&
         typeof u.saltHex === 'string' &&
         typeof u.verifierHex === 'string' &&
-        store.add({ username: u.username, saltHex: u.saltHex, verifierHex: u.verifierHex })
+        store.add({ username: u.username, saltHex: u.saltHex, verifierHex: u.verifierHex, iterations: u.iterations })
       ) {
         users.push(serializeUser(u))
       }

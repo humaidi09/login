@@ -19,7 +19,28 @@ import { sha256Hex } from './sha256.js'
  * — i.e. one binding round plus 119,999 stretch rounds, HASH_ITERATIONS SHA-256
  * invocations in total (the README states it as "repeat 119,999 times").
  */
-export const HASH_ITERATIONS = 120000
+export const DEFAULT_HASH_ITERATIONS = 120000
+
+// A `let`, not a `const`: the work factor is owner-tunable from the portfolio admin
+// (applyAuthSettings below). Changing it is SAFE for existing accounts — every
+// stored record keeps the exact round count it was derived with, so only NEW
+// registrations use a changed value (see registerUser / loginUser).
+export let HASH_ITERATIONS = DEFAULT_HASH_ITERATIONS
+
+// Sane bounds for an in-browser demo: too few rounds is insecure, too many makes the
+// derive punishing. A value outside this range (or a non-integer) is ignored.
+const MIN_ITERATIONS = 1000
+const MAX_ITERATIONS = 500000
+
+// Apply the admin's auth settings. Only a finite integer work factor in range is
+// accepted, so a missing or malformed dataset keeps the bundled default.
+export function applyAuthSettings(settings) {
+  if (!settings || typeof settings !== 'object') return
+  const n = Number(settings.hashIterations)
+  if (Number.isInteger(n) && n >= MIN_ITERATIONS && n <= MAX_ITERATIONS) {
+    HASH_ITERATIONS = n
+  }
+}
 
 /** Salt size in bytes (generateSalt's default). 16 bytes → 32 hex characters. */
 export const SALT_BYTES = 16
@@ -56,10 +77,10 @@ export function generateSaltHex(bytes = SALT_BYTES) {
  * deriveAsync() so 120k rounds don't freeze the main thread. Kept for
  * determinism checks and as the readable reference.
  */
-export function derivePassword(password, saltHex) {
+export function derivePassword(password, saltHex, iterations = HASH_ITERATIONS) {
   // First round binds the salt to the password; later rounds only stretch.
   let digest = sha256Hex(saltHex + ':' + password)
-  for (let i = 1; i < HASH_ITERATIONS; i++) {
+  for (let i = 1; i < iterations; i++) {
     digest = sha256Hex(digest + saltHex)
   }
   return digest
@@ -73,8 +94,10 @@ export function derivePassword(password, saltHex) {
  * attacker actually pays per guess). Pass an AbortSignal to cancel in flight.
  */
 export function deriveAsync(password, saltHex, options = {}) {
-  const { onProgress, chunkRounds = 2000, signal } = options
-  const total = HASH_ITERATIONS
+  // iterations defaults to the current work factor; loginUser passes the verifying
+  // account's OWN stored count so a changed global never breaks an old login.
+  const { onProgress, chunkRounds = 2000, signal, iterations = HASH_ITERATIONS } = options
+  const total = iterations
 
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new DOMException('Derivation aborted', 'AbortError'))
@@ -137,11 +160,34 @@ export function checkUsername(username) {
   return { valid: true, problem: '' }
 }
 
-// The handful of passwords that show up in every breach list (kBanned).
-const BANNED = new Set([
+// The handful of passwords that show up in every breach list (kBanned). A `let`
+// (via applyBannedList) so the owner can curate this list from the portfolio admin;
+// checkPasswordPolicy reads it live. The bundled list is the fallback.
+const DEFAULT_BANNED = [
   'password', '12345678', 'qwerty123', 'letmein', 'admin123',
   'password1', 'welcome1', 'iloveyou', 'abc12345',
-])
+]
+let BANNED = new Set(DEFAULT_BANNED)
+
+// Replace the breach-list from an admin-edited dataset. Accepts rows that are plain
+// strings or objects carrying the word under `password` / `value` / `word`. Entries
+// are trimmed and lower-cased (checkPasswordPolicy compares case-insensitively).
+// Only replaces the bundled list when at least one valid entry survives, so a bad
+// dataset can never leave the app with no breach list.
+export function applyBannedList(rows) {
+  if (!Array.isArray(rows)) return
+  const cleaned = []
+  for (const row of rows) {
+    const raw =
+      typeof row === 'string'
+        ? row
+        : row && typeof row === 'object'
+          ? row.password ?? row.value ?? row.word
+          : ''
+    if (typeof raw === 'string' && raw.trim()) cleaned.push(raw.trim().toLowerCase())
+  }
+  if (cleaned.length) BANNED = new Set(cleaned)
+}
 
 /**
  * Password strength policy (checkPasswordPolicy): 8–128 characters, a mix of
@@ -196,13 +242,14 @@ export function createUserStore() {
     get(username) {
       return byKey.get(key(username)) || null
     },
-    /** Store {username, saltHex, verifierHex}; false if the name is taken. */
+    /** Store {username, saltHex, verifierHex, iterations}; false if the name is taken. */
     add(record) {
       if (byKey.has(key(record.username))) return false
       byKey.set(key(record.username), {
         username: record.username,
         saltHex: record.saltHex,
         verifierHex: record.verifierHex,
+        iterations: record.iterations,
       })
       return true
     },
@@ -258,8 +305,11 @@ export async function registerUser(store, { username, password, confirmPassword 
   }
 
   const saltHex = generateSaltHex()
-  const { verifierHex, elapsedMs } = await deriveAsync(password, saltHex, options)
-  const record = { username, saltHex, verifierHex }
+  // New accounts use the current work factor — and record it, so this account can
+  // always be verified at this exact count even if the global later changes.
+  const iterations = HASH_ITERATIONS
+  const { verifierHex, elapsedMs } = await deriveAsync(password, saltHex, { ...options, iterations })
+  const record = { username, saltHex, verifierHex, iterations }
   store.add(record)
 
   return {
@@ -284,7 +334,11 @@ export async function loginUser(store, { username, password }, options = {}) {
     return { ok: false, status: STATUS.UNKNOWN_USER, message: INVALID_CREDENTIALS }
   }
 
-  const { verifierHex, elapsedMs } = await deriveAsync(password, record.saltHex, options)
+  // Verify with the account's OWN stored round count (older accounts predate the
+  // per-record field and were all derived at the original default). This is exactly
+  // why changing the global work factor can never lock an existing account out.
+  const iterations = Number.isInteger(record.iterations) ? record.iterations : DEFAULT_HASH_ITERATIONS
+  const { verifierHex, elapsedMs } = await deriveAsync(password, record.saltHex, { ...options, iterations })
   if (!constantTimeEqualHex(verifierHex, record.verifierHex)) {
     return { ok: false, status: STATUS.WRONG_PASSWORD, message: INVALID_CREDENTIALS, elapsedMs }
   }

@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import { LogOut, ShieldCheck, Clock, Database, Fingerprint, KeyRound, Lock } from 'lucide-react'
 import { Card, Panel, Button, SectionHeading, Stat, Badge, Callout } from '@/components/ui'
 import { useAuthStore } from '@/store/useAuthStore'
+import { DEFAULT_HASH_ITERATIONS } from '@/engine/auth'
 import { fmtDateTime, fmtMs, fmtInt, truncMid } from '@/lib/format'
 import { useEnter } from '@/lib/motion'
 import Reveal from '@/components/Reveal'
@@ -56,7 +57,7 @@ export function Dashboard() {
           <Stat label="Signed in" value={fmtDateTime(session?.since)} className="h-full" />
         </Reveal>
         <Reveal className="h-full" delay={0.06}>
-          <Stat label="Last verification" value={fmtMs(session?.lastDeriveMs)} sub={`${fmtInt(120000)} rounds of work`} className="h-full" />
+          <Stat label="Last verification" value={fmtMs(session?.lastDeriveMs)} sub={`${fmtInt(record?.iterations ?? DEFAULT_HASH_ITERATIONS)} rounds of work`} className="h-full" />
         </Reveal>
         <Reveal className="h-full" delay={0.12}>
           <Stat label="Accounts on this device" value={userCount} sub={userCount === 1 ? 'just you' : 'stored locally'} className="h-full" />
@@ -91,7 +92,7 @@ export function Dashboard() {
             <Badge tone="ok">
               <Lock className="h-3 w-3" /> no password stored
             </Badge>
-            <Badge tone="accent">salted + 120,000-round SHA-256</Badge>
+            <Badge tone="accent">salted + {fmtInt(record?.iterations ?? DEFAULT_HASH_ITERATIONS)}-round SHA-256</Badge>
             <Badge tone="neutral">constant-time verified</Badge>
           </div>
         </Card>
